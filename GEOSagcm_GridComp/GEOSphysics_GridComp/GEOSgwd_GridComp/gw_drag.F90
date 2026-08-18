@@ -63,7 +63,7 @@ contains
           taugwdx_dev,  taugwdy_dev,  tauox_dev,    tauoy_dev,  feo_dev,           &
           taubkgx_dev,  taubkgy_dev,  taubx_dev,    tauby_dev,  feb_dev,           &
           fepo_dev,     fepb_dev,     utbsrc_dev,   vtbsrc_dev, ttbsrc_dev,        &
-          bgstressmax,  effgworo,     effgwbkg,     rc            )
+          bgstressmax,  effgworo,     effgwbkg,     geos_mlt, gwd_top_pressure, rc )
 
 !-----------------------------------------------------------------------
 ! Interface for multiple gravity wave drag parameterization.
@@ -77,6 +77,8 @@ contains
     real,    intent(in   ) :: bgstressmax              ! Max of equatorial profile of BG stress factor
     real,    intent(in   ) :: effgwbkg                 ! tendency efficiency for background gwd (Default = 0.125)
     real,    intent(in   ) :: effgworo                 ! tendency efficiency for orographic gwd (Default = 0.125)
+    logical, intent(in   ) :: geos_mlt                 ! apply GEOS-MLT-specific GWD top cutoff
+    real,    intent(in   ) :: gwd_top_pressure         ! GEOS-MLT top pressure cutoff for GWD tendencies (Pa)
     real,    intent(in   ) :: pint_dev(pcols,pver+1)   ! pressure at the layer edges
     real,    intent(in   ) :: t_dev(pcols,pver)        ! temperature at layers
     real,    intent(in   ) :: u_dev(pcols,pver)        ! zonal wind at layers
@@ -120,6 +122,7 @@ contains
     integer :: kbotoro                  ! launch-level index for orographic
     integer :: kbotbg                   ! launch-level index for background
     integer :: ktopbg, ktoporo          ! top interface of gwd region
+    integer :: ktop_gwd                 ! pressure-based top interface of gwd region
     integer :: kldv                     ! top interface of low level stress divergence region
     integer :: kldvmn                   ! min value of kldv
     integer :: ksrc                     ! index of top interface of source region
@@ -153,6 +156,7 @@ contains
     real    :: cw (-pgwv:pgwv)      ! wave phase speeds
     real    :: cw4(-pgwv:pgwv)      ! wave phase speeds
 
+    
 !-----------------------------------------------------------------------------
 
 ! Assign wave phase speeds
@@ -175,6 +179,16 @@ contains
     cw = cw*(sum(cw4)/sum(cw))
 
     I_LOOP: do i = 1, pcols
+
+! GEOS_MLT: Set the top of the active GWD region from the instantaneous
+! layer pressure. Native GEOS retains the original full-column GWD behavior.
+       ktop_gwd = 0
+       if (geos_mlt) then
+          do k = 1, pver
+             if (pmid_dev(i,k) >= gwd_top_pressure) exit
+             ktop_gwd = k
+          end do
+       end if
 
 ! zero net tendencies prior to runs
        do k = 1, pver
@@ -216,7 +230,7 @@ contains
 !-----------------------------------------------------------------------------
        if (effgwbkg > 0.0 .and. pgwv > 0) then
 
-          ktopbg  = 0
+          ktopbg  = ktop_gwd
           do k = 0, pver
              if (pref_dev(k+1) .lt. 40000.) then
                 kbotbg = k    ! spectrum source at 400 mb
@@ -266,7 +280,7 @@ contains
 !-----------------------------------------------------------------------------
        if (effgworo > 0.0) then
 
-          ktoporo = 0
+          ktoporo = ktop_gwd
           kbotoro = pver
 
 ! Determine the orographic wave source
@@ -292,8 +306,8 @@ contains
 
 ! Add the orographic tendencies to the spectrum tendencies
 ! Compute the temperature tendency from energy conservation (includes spectrum).
-
-          do k = 1, pver
+          
+          do k = 1, pver              
              dudt_org_dev(i,k) =                     utgw(k)
              dvdt_org_dev(i,k) =                     vtgw(k)
              dtdt_org_dev(i,k) =                     ttgw(k)
@@ -308,7 +322,11 @@ contains
        end if
 
     end do I_LOOP
-    rc = 0
+    
+    ! For GEOS_MLT, pressure-based ktop_gwd leaves tendencies above
+    ! gwd_top_pressure at their initialized zero values.
+    
+    rc = 0    
 
     return
   end subroutine gw_intr
@@ -489,12 +507,14 @@ contains
     end if
 
 ! Project the local wind at midpoints onto the source wind.
+    
     do k = 1, pver
        ubm(k) = u(i,k) * xv + v(i,k) * yv
     end do
 
 ! Compute the interface wind projection by averaging the midpoint winds.
 ! Use the top level wind at the top interface.
+    
     ubi(0) = ubm(1)
     do k = 1, pver
        ubi(k) = ubm(k)
@@ -651,7 +671,7 @@ contains
        ubm(k) = u(i,k) * xv + v(i,k) * yv
     end do
 
-! Compute the bottom interface wind projection using the midpoint winds.
+    ! Compute the bottom interface wind projection using the midpoint winds.
     ubi(0) = ubm(1)
     do k = 1, pver
        ubi(k) = ubm(k)
@@ -862,7 +882,7 @@ contains
 
 ! Loop from bottom to top to get stress profiles
     do l = -ngwv, ngwv
-       do k = pver-1, ktop, -1
+       do k = pver-1, ktop, -1   
           if (k <= kbot-1) then
              d = dback(k)
              ubmc = ubi(k) - c(l)
@@ -1074,6 +1094,7 @@ contains
 !-----------------------------------------------------------------------
     tau0x = tau(0,kbot) * xv * effgw*utfac
     tau0y = tau(0,kbot) * yv * effgw*utfac
+
 
     return
   end subroutine gw_drag_prof
